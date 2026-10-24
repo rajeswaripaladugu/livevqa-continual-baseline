@@ -1,0 +1,30 @@
+{
+  "num_chunks": 3,
+  "replay_capacity": 4,
+  "accuracy_matrix": [
+    [
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0
+    ]
+  ],
+  "bwt": 0.0,
+  "bwt_pct": 0.0,
+  "average_forgetting": 0.0,
+  "average_forgetting_pct": 0.0,
+  "forgetting_per_chunk": [
+    0.0,
+    0.0
+  ],
+  "wall_clock_seconds": 3.01
+}

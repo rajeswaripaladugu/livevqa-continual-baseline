@@ -1,0 +1,44 @@
+experiment_name: "gpu_full_lora"
+is_synthetic: false
+description: "Full GPU configuration: Qwen2.5-VL-3B bf16 LoRA, effective batch 128, 2 epochs, lr 1e-4, AdamW, cosine schedule with warmup"
+
+model:
+  name: "Qwen/Qwen2.5-VL-3B-Instruct"
+  type: "qwen2_5_vl"
+  torch_dtype: "bfloat16"
+  load_in_4bit: false
+  max_pixels: 501760
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  lora_r: 32
+  lora_alpha: 64
+  lora_dropout: 0.05
+  use_dora: false
+  exclude_modules_pattern: ".*visual.*"
+
+data:
+  train_path: "data/livevqa_train.jsonl"
+  eval_path: "data/livevqa_eval.jsonl"
+  mmstar_path: "data/mmstar_eval.jsonl"
+  format: "MCQA"
+  options_key: "options"
+  split_by_image: true
+  train_split_ratio: 0.8
+  seed: 42
+
+training:
+  epochs: 2
+  batch_size: 8
+  gradient_accumulation_steps: 16  # Effective batch size = 128
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  lr_scheduler_type: "cosine"
+  fp16: false
+  bf16: true
+  seed: 42
+  max_length: 512
+
+eval:
+  batch_size: 4
+  temperature: 0.0
+  max_new_tokens: 16

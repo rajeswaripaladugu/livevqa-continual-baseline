@@ -1,0 +1,59 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.env
+.venv
+
+# PyTest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Datasets and Weights (Hard Rule 4: Do not commit datasets, images, model weights, or API keys)
+data/*.json
+data/*.jsonl
+data/images/
+data/synthetic_images/
+data/livevqa/
+data/mmstar/
+models/
+checkpoints/
+*.pt
+*.bin
+*.safetensors
+*.pth
+
+# Results outputs that should not be tracked unless committed explicitly
+results/predictions_*.jsonl
+results/*.pt
+
+# OS files
+.DS_Store
+Thumbs.db
