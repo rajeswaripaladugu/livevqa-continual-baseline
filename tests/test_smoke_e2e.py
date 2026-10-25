@@ -20,7 +20,7 @@ def test_end_to_end_cpu_smoke(tmp_path) -> None:
     gen_path = generate_synthetic_dataset(
         output_path=synthetic_data_path,
         num_samples=16,
-        seed=42,
+        seed=0,
     )
     assert gen_path.is_file(), "Synthetic dataset file was not generated"
 
@@ -52,10 +52,22 @@ def test_end_to_end_cpu_smoke(tmp_path) -> None:
     assert "accuracy_matrix" in continual_out
     assert len(continual_out["accuracy_matrix"]) == 2
 
-    # 5. Run Results Analyzer & Plot Generation
+    # 5. Run Results Analyzer & Plot Generation on temporary readme
+    test_readme = tmp_path / "README.md"
+    test_readme.write_text("<!-- RESULTS:START -->\n<!-- RESULTS:END -->\n", encoding="utf-8")
     analyze(
         results_dir_path=repo_root / "results",
-        readme_path=repo_root / "README.md",
+        readme_path=test_readme,
     )
-    summary_file = repo_root / "results" / "summary.md"
-    assert summary_file.is_file()
+    assert "## Automated Research Results Summary" in test_readme.read_text(encoding="utf-8")
+
+    # Clean up ephemeral prediction file and test row from results.csv
+    pred_path = Path(eval_out["predictions_file"])
+    if pred_path.is_file():
+        pred_path.unlink()
+
+    csv_path = repo_root / "results" / "results.csv"
+    if csv_path.is_file():
+        lines = csv_path.read_text(encoding="utf-8").splitlines()
+        filtered = [line for line in lines if "cpu_smoke_test_run" not in line]
+        csv_path.write_text("\n".join(filtered) + "\n", encoding="utf-8")

@@ -13,7 +13,7 @@
 | Run ID / Model | Label | Train N | Seen Eval N | Seen Acc (95% CI) | Unseen Eval N | Unseen Acc (95% CI) | Eval Majority Baseline | Wall-Clock (s) | Loss | Device | Commit |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `cpu_smoke.yaml` (HuggingFaceTB/SmolVLM-256M-Instruct) | **PIPELINE SMOKE TEST: sample too small for conclusions** | 12 | 12 | 0.00% [0.0%, 24.2%] | 4 | 0.00% [0.0%, 49.0%] | 50.00% (A) | 0.26s | 7.7830 | Intel64 Family 6 Model 140 Stepping 2, GenuineIntel | `uncommitted` |
-| `cpu_smoke.yaml` (HuggingFaceTB/SmolVLM-256M-Instruct) | **PIPELINE SMOKE TEST: sample too small for conclusions** | 12 | 12 | 0.00% [0.0%, 24.2%] | 4 | 0.00% [0.0%, 49.0%] | 50.00% (A) | 0.65s | 7.2365 | Intel64 Family 6 Model 140 Stepping 2, GenuineIntel | `uncommitted` |
+| `cpu_smoke.yaml` (HuggingFaceTB/SmolVLM-256M-Instruct) | **PIPELINE SMOKE TEST: sample too small for conclusions** | 12 | 12 | 0.00% [0.0%, 24.2%] | 4 | 0.00% [0.0%, 49.0%] | 50.00% (A) | 0.74s | 6.7846 | Intel64 Family 6 Model 140 Stepping 2, GenuineIntel | `uncommitted` |
 
 ### Continual Learning Evaluation Matrix (Pipeline Verification)
 - **Stages (Chunks K)**: 2
