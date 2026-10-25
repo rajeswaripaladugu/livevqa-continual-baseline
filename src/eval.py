@@ -24,17 +24,19 @@ from src.data import (
     VQASample,
     compute_answer_distribution,
     format_mcqa_prompt,
+    format_prompt,
     load_dataset,
     split_by_image,
 )
 from src.env import Timer, build_run_metadata, compute_config_hash
 from src.models import load_model_and_processor
+from src.train import format_chat_prompt
 
 logger = logging.getLogger(__name__)
 
 
-def extract_answer_letter(raw_text: str) -> Optional[str]:
-    """Strictly extract a multiple-choice letter (A, B, C, D) from raw model output.
+def extract_answer_letter(raw_text: str, allowed_letters: str = "ABCD") -> Optional[str]:
+    """Strictly extract a multiple-choice letter (e.g. A, B, C, D, E) from raw model output.
 
     Accepts:
         - "C", "(c)", "C.", "(C)", "C)"
@@ -46,33 +48,37 @@ def extract_answer_letter(raw_text: str) -> Optional[str]:
         - Empty or whitespace strings
         - Verbose paragraphs without an explicit option indicator
         - Multiple conflicting option mentions (e.g., "Either A or B")
+        - Letters not in allowed_letters
 
     Args:
         raw_text: Raw generation string from model.
+        allowed_letters: Set of acceptable uppercase choice letters (default: "ABCD").
 
     Returns:
-        Uppercase letter ('A', 'B', 'C', 'D') or None if extraction fails/is rejected.
+        Uppercase letter or None if extraction fails/is rejected.
     """
     if not raw_text or not raw_text.strip():
         return None
 
     text = raw_text.strip()
+    valid_set = set(allowed_letters.upper())
 
     # Pattern 1: Exact standalone letter with optional surrounding brackets/punctuation
     match_single = re.fullmatch(r"[\s\(\[\{]*([A-Za-z])[\s\)\]\}\.\:\,]*", text)
     if match_single:
         letter = match_single.group(1).upper()
-        if letter in "ABCD":
+        if letter in valid_set:
             return letter
 
     # Pattern 2: Starts with letter followed by punctuation or space: "A. The object...", "B) ..."
     match_leading = re.match(r"^[\s\(\[]*([A-Za-z])[\s\)\]\.\:\,]+", text)
     if match_leading:
         letter = match_leading.group(1).upper()
-        if letter in "ABCD":
-            # Guard against starting words like "A dog is..." by checking length or following tokens
+        if letter in valid_set:
+            # Guard against starting words like "A dog is..." by checking length or explicit delimiter
             tokens = text.split()
-            if len(tokens) <= 5 or text.startswith(("A.", "B.", "C.", "D.", "A)", "B)", "C)", "D)")):
+            prefix_tuples = tuple(f"{l}." for l in valid_set) + tuple(f"{l})" for l in valid_set)
+            if len(tokens) <= 5 or text.startswith(prefix_tuples):
                 return letter
 
     # Pattern 3: Explicit answer prefix anywhere in short output
@@ -84,10 +90,10 @@ def extract_answer_letter(raw_text: str) -> Optional[str]:
 
     for pat in prefix_patterns:
         matches = re.findall(pat, text, flags=re.IGNORECASE)
-        valid_letters = [m.upper() for m in matches if m.upper() in "ABCD"]
-        if len(set(valid_letters)) == 1:
-            return valid_letters[0]
-        elif len(set(valid_letters)) > 1:
+        matched_letters = [m.upper() for m in matches if m.upper() in valid_set]
+        if len(set(matched_letters)) == 1:
+            return matched_letters[0]
+        elif len(set(matched_letters)) > 1:
             # Conflicting letters in text -> reject
             return None
 
@@ -138,6 +144,7 @@ def evaluate_split(
     device: torch.device,
     base_dir: Optional[Path] = None,
     max_new_tokens: int = 16,
+    format_type: str = "MCQA",
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """Evaluate model on a list of samples and collect raw audit predictions.
 
@@ -149,6 +156,7 @@ def evaluate_split(
         device: PyTorch device.
         base_dir: Root directory for relative images.
         max_new_tokens: Tokens to generate.
+        format_type: Prompt format ('MCQA', 'QA', 'QAR').
 
     Returns:
         Tuple of (metrics_dict, raw_predictions_list).
@@ -174,6 +182,10 @@ def evaluate_split(
     raw_predictions: List[Dict[str, Any]] = []
     correct_count = 0
 
+    # Sub-metrics trackers for LiveVQA analysis
+    level_counts: Dict[int, Dict[str, int]] = {}
+    domain_counts: Dict[str, Dict[str, int]] = {}
+
     with torch.no_grad():
         for s in samples:
             img_path = Path(s.image)
@@ -187,9 +199,10 @@ def evaluate_split(
             else:
                 img = Image.new("RGB", (128, 128), color=(220, 220, 220))
 
-            prompt = format_mcqa_prompt(s.question, options=s.options)
+            prompt, _ = format_prompt(s, format_type=format_type)
+            prompt_text = format_chat_prompt(processor, prompt, has_image=True)
             inputs = processor(
-                text=prompt,
+                text=prompt_text,
                 images=img,
                 return_tensors="pt",
             )
@@ -210,17 +223,57 @@ def evaluate_split(
             else:
                 gen_text = ""
 
-            parsed_answer = extract_answer_letter(gen_text)
+            # Detect if options include E
+            allowed_letters = "ABCD"
+            if isinstance(s.options, dict) and "E" in s.options:
+                allowed_letters = "ABCDE"
+            elif isinstance(s.options, (list, tuple)) and len(s.options) >= 5:
+                allowed_letters = "ABCDE"
+            elif s.answer.upper().strip() == "E":
+                allowed_letters = "ABCDE"
+
             ground_truth = s.answer.upper().strip()
-            is_correct = bool(parsed_answer is not None and parsed_answer == ground_truth)
+
+            if format_type.upper() in ("QA", "QAR"):
+                # Open-ended factual evaluation matching paper protocol
+                clean_gen = gen_text.strip().lower()
+                targets = [s.answer.lower()]
+                if s.ground_truth_text:
+                    targets.append(s.ground_truth_text.lower())
+                if s.ground_truth_list:
+                    targets.extend([gt.lower() for gt in s.ground_truth_list])
+                parsed_answer = gen_text.strip()
+                is_correct = any(t in clean_gen or clean_gen in t for t in targets if t)
+            else:
+                # MCQA letter evaluation
+                parsed_answer = extract_answer_letter(gen_text, allowed_letters=allowed_letters)
+                is_correct = bool(parsed_answer is not None and parsed_answer == ground_truth)
 
             if is_correct:
                 correct_count += 1
 
+            # Track level and domain breakdown
+            if s.level is not None:
+                lvl = int(s.level)
+                level_counts.setdefault(lvl, {"total": 0, "correct": 0})
+                level_counts[lvl]["total"] += 1
+                if is_correct:
+                    level_counts[lvl]["correct"] += 1
+
+            if s.domain is not None:
+                dom = str(s.domain).lower()
+                domain_counts.setdefault(dom, {"total": 0, "correct": 0})
+                domain_counts[dom]["total"] += 1
+                if is_correct:
+                    domain_counts[dom]["correct"] += 1
+
             raw_predictions.append({
                 "id": s.id,
                 "split": split_name,
+                "level": s.level,
+                "domain": s.domain,
                 "ground_truth": ground_truth,
+                "ground_truth_text": s.ground_truth_text,
                 "raw_output": gen_text.strip(),
                 "parsed_answer": parsed_answer,
                 "is_correct": is_correct,
@@ -231,8 +284,27 @@ def evaluate_split(
     acc = round(correct_count / total, 4) if total > 0 else 0.0
     ci_low, ci_high = compute_wilson_confidence_interval(correct_count, total)
 
+    # Compute breakdown dictionaries
+    level_breakdown = {
+        f"level_{lvl}": {
+            "total": data["total"],
+            "correct": data["correct"],
+            "accuracy_pct": round(100.0 * data["correct"] / data["total"], 2) if data["total"] > 0 else 0.0,
+        }
+        for lvl, data in level_counts.items()
+    }
+    domain_breakdown = {
+        dom: {
+            "total": data["total"],
+            "correct": data["correct"],
+            "accuracy_pct": round(100.0 * data["correct"] / data["total"], 2) if data["total"] > 0 else 0.0,
+        }
+        for dom, data in domain_counts.items()
+    }
+
     metrics = {
         "split": split_name,
+        "format": format_type,
         "total": total,
         "correct": correct_count,
         "accuracy": acc,
@@ -243,11 +315,14 @@ def evaluate_split(
         "majority_baseline": majority_baseline,
         "majority_baseline_pct": round(majority_baseline * 100, 2),
         "majority_label": majority_label,
+        "level_breakdown": level_breakdown,
+        "domain_breakdown": domain_breakdown,
     }
 
     logger.info(
-        "Split: %s | Acc: %.2f%% (95%% CI: %s) | Majority Baseline: %.2f%% (Label: %s)",
+        "Split: %s (%s) | Acc: %.2f%% (95%% CI: %s) | Majority Baseline: %.2f%% (Label: %s)",
         split_name,
+        format_type,
         metrics["accuracy_pct"],
         metrics["ci_95"],
         metrics["majority_baseline_pct"],
@@ -261,6 +336,9 @@ def evaluate(
     model: Optional[torch.nn.Module] = None,
     processor: Optional[Any] = None,
     run_id: Optional[str] = None,
+    checkpoint_path: Optional[str | Path] = None,
+    wall_clock_seconds: Optional[float] = None,
+    final_train_loss: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Full evaluation orchestrator over seen, unseen, and optional MMStar splits.
 
@@ -271,74 +349,102 @@ def evaluate(
         model: Optional pre-loaded or trained model instance.
         processor: Optional pre-loaded processor.
         run_id: Unique identifier for audit logging.
+        checkpoint_path: Optional path to saved model checkpoint (.pt).
+        wall_clock_seconds: Optional training duration in seconds.
+        final_train_loss: Optional final loss value from training.
 
     Returns:
         Summary evaluation results dictionary.
     """
-    cfg_file = Path(config_path)
-    with cfg_file.open("r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    eval_timer = Timer()
+    with eval_timer:
+        cfg_file = Path(config_path)
+        with cfg_file.open("r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    base_dir = cfg_file.parent.parent
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        base_dir = cfg_file.parent.parent
 
-    if model is None or processor is None:
-        model, processor = load_model_and_processor(config)
-        model.to(device)
+        if model is None or processor is None:
+            model, processor = load_model_and_processor(config)
+            if checkpoint_path and Path(checkpoint_path).is_file():
+                ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+                if "model_state_dict" in ckpt:
+                    model.load_state_dict(ckpt["model_state_dict"], strict=False)
+                    logger.info("Successfully loaded fine-tuned checkpoint: %s", checkpoint_path)
+            model.to(device)
 
-    data_cfg = config.get("data", {})
-    seed = config.get("training", {}).get("seed", 42)
+        data_cfg = config.get("data", {})
+        seed = config.get("training", {}).get("seed", 42)
 
-    # Load and split dataset
-    train_path = data_cfg.get("train_path", "data/synthetic_smoke.jsonl")
-    resolved_path = train_path if Path(train_path).is_file() else (base_dir / train_path)
-    all_samples = load_dataset(resolved_path, base_dir=base_dir)
+        # Load and split dataset
+        train_path = data_cfg.get("train_path", "data/synthetic_smoke.jsonl")
+        resolved_path = train_path if Path(train_path).is_file() else (base_dir / train_path)
+        all_samples = load_dataset(resolved_path, base_dir=base_dir)
 
-    if data_cfg.get("split_by_image", True):
-        seen_samples, unseen_samples = split_by_image(
-            all_samples,
-            train_ratio=data_cfg.get("train_split_ratio", 0.8),
-            seed=seed,
+        if data_cfg.get("split_by_image", True):
+            seen_samples, unseen_samples = split_by_image(
+                all_samples,
+                train_ratio=data_cfg.get("train_split_ratio", 0.8),
+                seed=seed,
+            )
+        else:
+            seen_samples = all_samples
+            unseen_samples = []
+
+        # Optional MMStar dataset
+        mmstar_samples: List[VQASample] = []
+        mmstar_path = data_cfg.get("mmstar_path")
+        if mmstar_path:
+            res_mmstar = mmstar_path if Path(mmstar_path).is_file() else (base_dir / mmstar_path)
+            if res_mmstar.is_file():
+                mmstar_samples = load_dataset(res_mmstar, base_dir=base_dir)
+
+        data_format = data_cfg.get("format", "MCQA")
+        all_raw_predictions: List[Dict[str, Any]] = []
+
+        # Evaluate seen
+        seen_metrics, seen_preds = evaluate_split(
+            model, processor, seen_samples, "seen", device, base_dir=base_dir, format_type=data_format
         )
-    else:
-        seen_samples = all_samples
-        unseen_samples = []
+        all_raw_predictions.extend(seen_preds)
 
-    # Optional MMStar dataset
-    mmstar_samples: List[VQASample] = []
-    mmstar_path = data_cfg.get("mmstar_path")
-    if mmstar_path:
-        res_mmstar = mmstar_path if Path(mmstar_path).is_file() else (base_dir / mmstar_path)
-        if res_mmstar.is_file():
-            mmstar_samples = load_dataset(res_mmstar, base_dir=base_dir)
-
-    all_raw_predictions: List[Dict[str, Any]] = []
-
-    # Evaluate seen
-    seen_metrics, seen_preds = evaluate_split(
-        model, processor, seen_samples, "seen", device, base_dir=base_dir
-    )
-    all_raw_predictions.extend(seen_preds)
-
-    # Evaluate unseen
-    unseen_metrics, unseen_preds = evaluate_split(
-        model, processor, unseen_samples, "unseen", device, base_dir=base_dir
-    )
-    all_raw_predictions.extend(unseen_preds)
-
-    # Evaluate MMStar if present
-    mmstar_metrics = None
-    if mmstar_samples:
-        mmstar_metrics, mmstar_preds = evaluate_split(
-            model, processor, mmstar_samples, "mmstar", device, base_dir=base_dir
+        # Evaluate unseen
+        unseen_metrics, unseen_preds = evaluate_split(
+            model, processor, unseen_samples, "unseen", device, base_dir=base_dir, format_type=data_format
         )
-        all_raw_predictions.extend(mmstar_preds)
+        all_raw_predictions.extend(unseen_preds)
+
+        # Evaluate MMStar if present (always MCQA)
+        mmstar_metrics = None
+        if mmstar_samples:
+            mmstar_metrics, mmstar_preds = evaluate_split(
+                model, processor, mmstar_samples, "mmstar", device, base_dir=base_dir, format_type="MCQA"
+            )
+            all_raw_predictions.extend(mmstar_preds)
+
+    # Resolve wall_clock_seconds and final_train_loss from train_stats.json if not provided
+    exp_name = config.get("experiment_name", "run")
+    stats_file = base_dir / "checkpoints" / exp_name / "train_stats.json"
+    if (wall_clock_seconds is None or final_train_loss is None) and stats_file.is_file():
+        try:
+            with stats_file.open("r", encoding="utf-8") as sf:
+                sdata = json.load(sf)
+                if wall_clock_seconds is None and "wall_clock_seconds" in sdata:
+                    wall_clock_seconds = sdata["wall_clock_seconds"]
+                if final_train_loss is None and "final_train_loss" in sdata:
+                    final_train_loss = sdata["final_train_loss"]
+        except Exception:
+            pass
+
+    if wall_clock_seconds is None:
+        wall_clock_seconds = eval_timer.elapsed
 
     # Save raw predictions for complete research auditability
     results_dir = base_dir / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
     if not run_id:
-        run_id = f"{config.get('experiment_name', 'run')}_{int(datetime.now(timezone.utc).timestamp())}"
+        run_id = f"{exp_name}_{seed}"
 
     pred_file = results_dir / f"predictions_{run_id}.jsonl"
     with pred_file.open("w", encoding="utf-8") as f:
@@ -356,8 +462,10 @@ def evaluate(
         model_name=config.get("model", {}).get("name", "VLM"),
         num_train_samples=len(seen_samples),
         num_eval_samples=len(seen_samples) + len(unseen_samples),
+        wall_clock_seconds=wall_clock_seconds,
     )
     row = {
+        "run_id": run_id,
         "timestamp": meta["timestamp"],
         "git_commit": meta["git_commit"],
         "config_name": cfg_file.name,
@@ -375,16 +483,18 @@ def evaluate(
         "use_dora": config.get("model", {}).get("use_dora", False),
         "data_format": data_cfg.get("format", "MCQA"),
         "num_train_samples": len(seen_samples),
+        "num_seen_eval_samples": len(seen_samples),
+        "num_unseen_eval_samples": len(unseen_samples),
         "num_eval_samples": len(seen_samples) + len(unseen_samples),
-        "wall_clock_seconds": round(meta.get("wall_clock_seconds", 0.0), 2),
-        "final_train_loss": None,
+        "wall_clock_seconds": round(float(wall_clock_seconds), 2) if wall_clock_seconds is not None else 0.0,
+        "final_train_loss": round(float(final_train_loss), 4) if final_train_loss is not None else None,
         "seen_accuracy": seen_metrics["accuracy_pct"],
         "seen_ci_95": seen_metrics["ci_95"],
         "unseen_accuracy": unseen_metrics["accuracy_pct"],
         "unseen_ci_95": unseen_metrics["ci_95"],
         "generalization_gap": round(seen_metrics["accuracy_pct"] - unseen_metrics["accuracy_pct"], 2),
-        "majority_baseline": seen_metrics["majority_baseline_pct"],
-        "majority_label": seen_metrics["majority_label"],
+        "majority_baseline": unseen_metrics["majority_baseline_pct"],
+        "majority_label": unseen_metrics["majority_label"],
         "mmstar_accuracy": mmstar_metrics["accuracy_pct"] if mmstar_metrics else None,
         "run_status": "SUCCESS",
         "predictions_file": str(pred_file),
@@ -410,10 +520,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="LiveVQA Continual Baseline Evaluator")
     parser.add_argument("--config", type=str, required=True, help="Path to config YAML")
     parser.add_argument("--run-id", type=str, default=None, help="Identifier for predictions file")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Path to saved model checkpoint (.pt)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    evaluate(args.config, run_id=args.run_id)
+    evaluate(args.config, run_id=args.run_id, checkpoint_path=args.checkpoint)
 
 
 if __name__ == "__main__":

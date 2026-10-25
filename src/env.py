@@ -22,13 +22,13 @@ logger = logging.getLogger(__name__)
 
 
 def get_git_commit(cwd: Optional[str | Path] = None) -> str:
-    """Retrieve the current git commit hash and dirty status.
+    """Retrieve the current git commit hash (8 chars) or 'uncommitted' if dirty.
 
     Args:
         cwd: Directory within the git repository.
 
     Returns:
-        String containing commit hash, optionally appended with '-dirty'.
+        String containing 8-char commit hash, or 'uncommitted' if changes exist.
     """
     try:
         git_dir = str(cwd) if cwd else os.path.dirname(os.path.abspath(__file__))
@@ -45,8 +45,8 @@ def get_git_commit(cwd: Optional[str | Path] = None) -> str:
             text=True,
         ).strip()
         if status:
-            return f"{commit}-dirty"
-        return commit
+            return "uncommitted"
+        return commit[:8]
     except Exception:
         return "unversioned"
 

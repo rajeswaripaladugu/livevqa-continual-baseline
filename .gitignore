@@ -36,19 +36,30 @@ htmlcov/
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints
 
-# Datasets and Weights (Hard Rule 4: Do not commit datasets, images, model weights, or API keys)
+# Datasets and Weights (Do not commit datasets, images, model weights, or API keys)
 data/*.json
 data/*.jsonl
 data/images/
 data/synthetic_images/
+data/livevqa_images/
 data/livevqa/
 data/mmstar/
+images/
 models/
 checkpoints/
+adapters/
 *.pt
 *.bin
 *.safetensors
 *.pth
+*.pdf
+
+# Secrets, configs, and API keys
+.env*
+*.key
+*token*
+*api_key*
+configs/temp/
 
 # Results outputs that should not be tracked unless committed explicitly
 results/predictions_*.jsonl

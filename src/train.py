@@ -21,7 +21,7 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from transformers import get_cosine_schedule_with_warmup
 
-from src.data import VQASample, format_mcqa_prompt, load_dataset, split_by_image
+from src.data import VQASample, format_mcqa_prompt, format_prompt, load_dataset, split_by_image
 from src.env import Timer, build_run_metadata, compute_config_hash
 from src.models import load_model_and_processor
 
@@ -46,11 +46,13 @@ class VQADataset(Dataset):
         self,
         samples: List[VQASample],
         processor: Any,
+        format_type: str = "MCQA",
         max_length: int = 512,
         base_dir: Optional[Path] = None,
     ) -> None:
         self.samples = samples
         self.processor = processor
+        self.format_type = format_type
         self.max_length = max_length
         self.base_dir = base_dir or Path(".")
 
@@ -73,8 +75,7 @@ class VQADataset(Dataset):
             # Fallback for synthetic/missing image during tests
             image = Image.new("RGB", (128, 128), color=(200, 200, 200))
 
-        prompt = format_mcqa_prompt(sample.question, options=sample.options)
-        target = f" {sample.answer}"
+        prompt, target = format_prompt(sample, format_type=self.format_type)
         full_text = f"{prompt}{target}"
 
         return {
@@ -85,6 +86,21 @@ class VQADataset(Dataset):
             "full_text": full_text,
             "answer": sample.answer,
         }
+
+
+def format_chat_prompt(processor: Any, prompt_text: str, has_image: bool = True) -> str:
+    """Format user prompt using processor chat template if available, else return plain text."""
+    if hasattr(processor, "apply_chat_template"):
+        try:
+            content = []
+            if has_image:
+                content.append({"type": "image"})
+            content.append({"type": "text", "text": prompt_text})
+            msg = [{"role": "user", "content": content}]
+            return processor.apply_chat_template(msg, add_generation_prompt=True)
+        except Exception:
+            pass
+    return prompt_text
 
 
 def build_masked_batch(
@@ -105,23 +121,24 @@ def build_masked_batch(
         Batch dictionary with input_ids, attention_mask, pixel_values, and labels.
     """
     images = [item["image"] for item in batch_items]
-    full_texts = [item["full_text"] for item in batch_items]
-    prompts = [item["prompt"] for item in batch_items]
+    images_nested = [[img] for img in images]
+    prompts = [format_chat_prompt(processor, item["prompt"], has_image=True) for item in batch_items]
+    full_texts = [f"{p}{item['target']}" for p, item in zip(prompts, batch_items)]
 
     # Process full inputs
     batch = processor(
         text=full_texts,
-        images=images,
+        images=images_nested,
         padding=True,
         max_length=max_length,
         return_tensors="pt",
     )
 
-    # Process prompt alone to determine prompt token lengths
+    # Process prompt alone with images to determine exact prompt token lengths
     prompt_batch = processor(
         text=prompts,
-        images=None,
-        padding=False,
+        images=images_nested,
+        padding=True,
         max_length=max_length,
         return_tensors="pt",
     )
@@ -235,7 +252,14 @@ def train(
     if max_samples and max_samples < len(train_samples):
         train_samples = train_samples[:max_samples]
 
-    dataset = VQADataset(train_samples, processor, max_length=train_cfg.get("max_length", 256), base_dir=base_dir)
+    data_format = data_cfg.get("format", "MCQA")
+    dataset = VQADataset(
+        samples=train_samples,
+        processor=processor,
+        format_type=data_format,
+        max_length=train_cfg.get("max_length", 256),
+        base_dir=base_dir,
+    )
     batch_size = max(1, train_cfg.get("batch_size", 2))
     dataloader = DataLoader(
         dataset,
@@ -355,11 +379,23 @@ def train(
         },
     )
 
+    import json
+    stats_file = ckpt_dir / "train_stats.json"
+    with stats_file.open("w", encoding="utf-8") as f:
+        json.dump({
+            "wall_clock_seconds": round(timer.elapsed, 2),
+            "final_train_loss": round(final_loss, 4),
+            "timestamp": metadata["timestamp"],
+            "config_hash": config_hash,
+            "git_commit": metadata["git_commit"],
+        }, f, indent=2)
+
     logger.info("Training completed in %.2fs. Final Loss: %.4f", timer.elapsed, final_loss)
     return {
         "metadata": metadata,
         "checkpoint_dir": str(ckpt_dir),
         "final_loss": final_loss,
+        "wall_clock_seconds": timer.elapsed,
         "model": model,
         "processor": processor,
     }

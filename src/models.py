@@ -175,10 +175,10 @@ class SimpleProcessor:
     """Tokenizer and image processor wrapper compatible with TinyVLM and testing."""
 
     def __init__(self) -> None:
-        # Standard vocab with A, B, C, D mapped deterministically
-        self.vocab = {"<pad>": 0, "<unk>": 1, "<eos>": 2, "A": 10, "B": 11, "C": 12, "D": 13}
+        # Standard vocab with A, B, C, D, E mapped deterministically
+        self.vocab = {"<pad>": 0, "<unk>": 1, "<eos>": 2, "A": 10, "B": 11, "C": 12, "D": 13, "E": 14}
         self.inv_vocab = {v: k for k, v in self.vocab.items()}
-        for i in range(14, 1000):
+        for i in range(15, 1000):
             self.vocab[f"tok_{i}"] = i
             self.inv_vocab[i] = f"tok_{i}"
         self.pad_token_id = 0
@@ -242,7 +242,8 @@ class SimpleProcessor:
             else:
                 img_list = images
             pixel_tensors = []
-            for img in img_list:
+            for item in img_list:
+                img = item[0] if isinstance(item, (list, tuple)) else item
                 img_resized = img.convert("RGB").resize((128, 128))
                 t = torch.tensor(list(img_resized.getdata()), dtype=torch.float32).view(128, 128, 3)
                 pixel_tensors.append(t.permute(2, 0, 1) / 255.0)
@@ -323,6 +324,17 @@ def configure_peft_adapters(
         return model
 
 
+def _normalize_processor_image_size(processor: Any) -> None:
+    """Ensure image_processor size is <= max_image_size to avoid upstream transformers exceptions."""
+    if hasattr(processor, "image_processor") and hasattr(processor.image_processor, "size"):
+        if hasattr(processor.image_processor, "max_image_size") and isinstance(processor.image_processor.max_image_size, dict):
+            max_edge = processor.image_processor.max_image_size.get("longest_edge", 512)
+            if isinstance(processor.image_processor.size, dict):
+                current_edge = processor.image_processor.size.get("longest_edge", 0)
+                if current_edge > max_edge:
+                    processor.image_processor.size = {"longest_edge": max_edge}
+
+
 def load_model_and_processor(
     config: Dict[str, Any],
     force_tiny: bool = False,
@@ -356,6 +368,7 @@ def load_model_and_processor(
             if not force_tiny and not is_synth:
                 from transformers import AutoModelForImageTextToText, AutoProcessor
                 processor = AutoProcessor.from_pretrained(model_name)
+                _normalize_processor_image_size(processor)
                 model = AutoModelForImageTextToText.from_pretrained(
                     model_name,
                     torch_dtype=torch.float32,
@@ -401,6 +414,7 @@ def load_model_and_processor(
         # Generic HuggingFace path
         from transformers import AutoModelForImageTextToText, AutoProcessor
         processor = AutoProcessor.from_pretrained(model_name)
+        _normalize_processor_image_size(processor)
         model = AutoModelForImageTextToText.from_pretrained(model_name)
 
     # Attach LoRA/DoRA adapters

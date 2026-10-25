@@ -158,7 +158,14 @@ def run_continual_learning(
                 logger.info("Added %d replay samples to training stage %d", len(replay_samples), stage_idx + 1)
 
             # Train on stage_idx data
-            dataset = VQADataset(train_items, processor, max_length=config.get("training", {}).get("max_length", 256), base_dir=base_dir)
+            data_format = config.get("data", {}).get("format", "MCQA")
+            dataset = VQADataset(
+                train_items,
+                processor,
+                format_type=data_format,
+                max_length=config.get("training", {}).get("max_length", 256),
+                base_dir=base_dir,
+            )
             batch_size = max(1, config.get("training", {}).get("batch_size", 2))
             dataloader = torch.utils.data.DataLoader(
                 dataset,
@@ -192,7 +199,13 @@ def run_continual_learning(
             for eval_idx in range(K):
                 eval_samples = chunks[eval_idx]
                 metrics, _ = evaluate_split(
-                    model, processor, eval_samples, f"chunk_{eval_idx+1}", device, base_dir=base_dir
+                    model,
+                    processor,
+                    eval_samples,
+                    f"chunk_{eval_idx+1}",
+                    device,
+                    base_dir=base_dir,
+                    format_type=config.get("data", {}).get("format", "MCQA"),
                 )
                 R[stage_idx, eval_idx] = metrics["accuracy"]
                 logger.info("Stage %d -> Eval on Chunk %d: Accuracy = %.2f%%", stage_idx + 1, eval_idx + 1, metrics["accuracy"] * 100)

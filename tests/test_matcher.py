@@ -72,3 +72,14 @@ def test_wilson_confidence_interval() -> None:
     low_0, high_0 = compute_wilson_confidence_interval(0, 10)
     assert low_0 == 0.0
     assert high_0 < 0.35
+
+
+def test_matcher_5_choice_allowed_letters() -> None:
+    """Verify that allowed_letters='ABCDE' extracts option E and rejects out-of-range choices."""
+    assert extract_answer_letter("E", allowed_letters="ABCDE") == "E"
+    assert extract_answer_letter("(e)", allowed_letters="ABCDE") == "E"
+    assert extract_answer_letter("Answer: E", allowed_letters="ABCDE") == "E"
+    assert extract_answer_letter("E. Some text", allowed_letters="ABCDE") == "E"
+    assert extract_answer_letter("F", allowed_letters="ABCDE") is None
+    # Default without E still rejects E
+    assert extract_answer_letter("E") is None

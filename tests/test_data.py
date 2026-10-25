@@ -5,6 +5,7 @@ from src.data import (
     VQASample,
     compute_answer_distribution,
     format_mcqa_prompt,
+    format_prompt,
     generate_synthetic_dataset,
     load_dataset,
     split_by_image,
@@ -119,3 +120,60 @@ def test_synthetic_data_generation(tmp_path) -> None:
     for s in samples:
         assert s.is_synthetic is True
         assert "synthetic" in s.id.lower()
+
+
+def test_format_prompt_mcqa_qa_qar() -> None:
+    """Verify format_prompt output across MCQA, QA, and QAR formats from the paper."""
+    sample = VQASample(
+        id="sample_01",
+        image="test.png",
+        question="What is the location shown?",
+        answer="A",
+        options={"A": "Paris", "B": "London", "C": "Tokyo", "D": "Rome", "E": "Berlin"},
+        ground_truth_text="Paris",
+        reasoning="The Eiffel Tower is located in Paris.",
+        level=1,
+        domain="news",
+    )
+
+    # 1. MCQA
+    p_mcqa, t_mcqa = format_prompt(sample, format_type="MCQA")
+    assert "A. Paris" in p_mcqa
+    assert "E. Berlin" in p_mcqa
+    assert t_mcqa == " A"
+
+    # 2. QA
+    p_qa, t_qa = format_prompt(sample, format_type="QA")
+    assert "Question: What is the location shown?" in p_qa
+    assert "Answer:" in p_qa
+    assert "A. Paris" not in p_qa
+    assert t_qa == " Paris"
+
+    # 3. QAR
+    p_qar, t_qar = format_prompt(sample, format_type="QAR")
+    assert "Question: What is the location shown?" in p_qar
+    assert "Paris" in t_qar
+    assert "Reasoning: The Eiffel Tower is located in Paris." in t_qar
+
+
+def test_livevqa_5_choice_validation() -> None:
+    """Verify that 5-choice options (A-E) and LiveVQA fields are parsed correctly."""
+    sample_dict = {
+        "id": "livevqa_test_01",
+        "image": "livevqa_images/test.png",
+        "question": "Which facility is shown?",
+        "options": {"A": "Opt A", "B": "Opt B", "C": "Opt C", "D": "Opt D", "E": "Opt E"},
+        "answer": "E",
+        "ground_truth_text": "Opt E",
+        "ground_truth_list": ["Opt E", "Option E"],
+        "reasoning": "Reasoning explanation text.",
+        "level": 2,
+        "domain": "news",
+    }
+    sample = validate_sample(sample_dict)
+    assert sample.answer == "E"
+    assert len(sample.options) == 5
+    assert sample.level == 2
+    assert sample.domain == "news"
+    assert sample.ground_truth_text == "Opt E"
+

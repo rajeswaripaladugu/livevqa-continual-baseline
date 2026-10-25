@@ -22,13 +22,18 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class VQASample:
-    """Standardized multimodal question-answering sample."""
+    """Standardized multimodal question-answering sample aligned with LiveVQA."""
 
     id: str
     image: str
     question: str
     answer: str
     options: Optional[Dict[str, str] | List[str]] = None
+    ground_truth_text: Optional[str] = None
+    ground_truth_list: Optional[List[str]] = None
+    reasoning: Optional[str] = None
+    level: Optional[int] = None  # 1 (entity recognition) or 2 (multi-hop reasoning)
+    domain: Optional[str] = None  # news, video, arxiv
     date: Optional[str] = None
     is_synthetic: bool = False
     metadata: Optional[Dict[str, Any]] = None
@@ -45,10 +50,8 @@ def format_mcqa_prompt(
 ) -> str:
     """Format question and multiple-choice options into an explicit prompt.
 
-    Handles three representations:
-    1. Dictionary: {'A': 'text', 'B': 'text'}
-    2. List: ['text1', 'text2', 'text3', 'text4']
-    3. Already formatted inside the question string.
+    Handles options dictionaries, lists, and embedded choices.
+    Supports choices A through E matching LiveVQA specifications.
 
     Args:
         question: Raw question text.
@@ -69,25 +72,61 @@ def format_mcqa_prompt(
         letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         opt_lines = [f"{letters[i]}. {opt}" for i, opt in enumerate(options)]
         formatted_options = "\n".join(opt_lines)
-    else:
-        # Options might already be embedded in the question
-        pass
 
+    choice_guide = "Output only the capital letter (A, B, C, D, or E)."
     if formatted_options:
         prompt = (
             f"Question: {clean_q}\n"
             f"Options:\n{formatted_options}\n"
-            f"Select the single best option. Output only the capital letter (A, B, C, or D).\n"
+            f"Select the single best option. {choice_guide}\n"
             f"Answer:"
         )
     else:
         prompt = (
             f"Question: {clean_q}\n"
-            f"Select the single best option. Output only the capital letter (A, B, C, or D).\n"
+            f"Select the single best option. {choice_guide}\n"
             f"Answer:"
         )
 
     return prompt
+
+
+def format_prompt(
+    sample: VQASample,
+    format_type: str = "MCQA",
+) -> Tuple[str, str]:
+    """Format prompt and target string according to the LiveVQA paper's 3 formats.
+
+    Paper Section 4.1:
+    1. MCQA: Question + Multiple-choices + Correct letter
+    2. QA: Direct Question + Ground Truth entity/answer
+    3. QAR: Question + Ground Truth + Reasoning chain
+
+    Args:
+        sample: VQASample instance.
+        format_type: One of 'MCQA', 'QA', or 'QAR'.
+
+    Returns:
+        Tuple of (prompt_text, target_text).
+    """
+    clean_q = sample.question.strip()
+    ans_text = sample.ground_truth_text or sample.answer
+    reasoning_text = sample.reasoning or ""
+
+    if format_type.upper() == "QA":
+        prompt = f"Question: {clean_q}\nAnswer:"
+        target = f" {ans_text}"
+    elif format_type.upper() == "QAR":
+        prompt = f"Question: {clean_q}\nAnswer:"
+        if reasoning_text:
+            target = f" {ans_text}\nReasoning: {reasoning_text}"
+        else:
+            target = f" {ans_text}"
+    else:  # Default: MCQA
+        prompt = format_mcqa_prompt(clean_q, options=sample.options)
+        target = f" {sample.answer}"
+
+    return prompt, target
 
 
 def validate_sample(sample_dict: Dict[str, Any], base_dir: Optional[Path] = None) -> VQASample:
@@ -106,20 +145,27 @@ def validate_sample(sample_dict: Dict[str, Any], base_dir: Optional[Path] = None
         raise ValueError(f"Missing mandatory field 'image' in sample {sample_dict.get('id')}")
     if "question" not in sample_dict:
         raise ValueError(f"Missing mandatory field 'question' in sample {sample_dict.get('id')}")
-    if "answer" not in sample_dict:
+    if "answer" not in sample_dict and "Ground_Truth" not in sample_dict:
         raise ValueError(f"Missing mandatory field 'answer' in sample {sample_dict.get('id')}")
 
     sample_id = str(sample_dict["id"])
     image_ref = str(sample_dict["image"])
     question = str(sample_dict["question"]).strip()
-    raw_answer = str(sample_dict["answer"]).strip().upper()
+    raw_answer = str(sample_dict.get("answer") or sample_dict.get("Ground_Truth")).strip()
 
     # Extract uppercase letter if formatted e.g. "(C)" or "C."
     clean_answer = raw_answer.strip("()[]{} .")
-    if not clean_answer:
+    if clean_answer and len(clean_answer) == 1:
+        clean_answer = clean_answer.upper()
+    elif not clean_answer:
         clean_answer = raw_answer
 
     options = sample_dict.get("options")
+    gt_text = sample_dict.get("ground_truth_text")
+    gt_list = sample_dict.get("ground_truth_list") or sample_dict.get("Ground_Truth_List")
+    reasoning = sample_dict.get("reasoning") or sample_dict.get("explanation")
+    level = sample_dict.get("level")
+    domain = sample_dict.get("domain") or sample_dict.get("category")
     date_val = sample_dict.get("date") or sample_dict.get("timestamp")
     is_synth = bool(sample_dict.get("is_synthetic", False) or "synthetic" in image_ref.lower())
 
@@ -129,6 +175,11 @@ def validate_sample(sample_dict: Dict[str, Any], base_dir: Optional[Path] = None
         question=question,
         answer=clean_answer,
         options=options,
+        ground_truth_text=gt_text,
+        ground_truth_list=gt_list,
+        reasoning=reasoning,
+        level=int(level) if level is not None else None,
+        domain=str(domain).lower() if domain else None,
         date=str(date_val) if date_val else None,
         is_synthetic=is_synth,
         metadata=sample_dict.get("metadata"),
@@ -406,9 +457,15 @@ def main() -> None:
     if args.stats:
         samples = load_dataset(args.stats)
         dist = compute_answer_distribution(samples)
-        logger.info("Dataset: %s | Total: %d", args.stats, dist["total"])
+        unique_imgs = len(set(s.image for s in samples))
+        print(f"=== Dataset Statistics: {args.stats} ===")
+        print(f"Total Questions: {dist['total']}")
+        print(f"Unique Images: {unique_imgs}")
+        print(f"Option Counts: {dist['counts']}")
+        print(f"Majority-Class Baseline: {dist['majority_baseline'] * 100:.2f}% (Letter: {dist['majority_label']})")
+        logger.info("Dataset: %s | Total: %d | Unique Images: %d", args.stats, dist["total"], unique_imgs)
         logger.info("Counts: %s", dist["counts"])
-        logger.info("Majority Baseline: %.2f%%", dist["majority_baseline"] * 100)
+        logger.info("Majority Baseline: %.2f%% (Letter: %s)", dist["majority_baseline"] * 100, dist["majority_label"])
 
 
 if __name__ == "__main__":

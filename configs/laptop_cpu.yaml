@@ -1,0 +1,43 @@
+experiment_name: "laptop_cpu_mcqa"
+is_synthetic: true
+description: "Laptop CPU configuration reproducing LiveVQA continual baseline on hand-crafted synthetic multimodal samples"
+
+model:
+  name: "HuggingFaceTB/SmolVLM-256M-Instruct"
+  type: "generic_vlm"
+  torch_dtype: "float32"
+  load_in_4bit: false
+  target_modules: ["q_proj", "v_proj"]
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  use_dora: false
+  exclude_modules_pattern: ".*vision.*|.*visual.*|.*image_newline.*"
+
+data:
+  train_path: "data/livevqa_laptop_mini.jsonl"
+  eval_path: "data/livevqa_laptop_mini.jsonl"
+  format: "MCQA"
+  options_key: "options"
+  split_by_image: true
+  train_split_ratio: 0.75
+  seed: 0
+
+training:
+  epochs: 1
+  batch_size: 2
+  gradient_accumulation_steps: 2
+  learning_rate: 1.0e-3
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  lr_scheduler_type: "cosine"
+  fp16: false
+  bf16: false
+  seed: 0
+  max_samples: 24
+  max_length: 256
+
+eval:
+  batch_size: 2
+  temperature: 0.0
+  max_new_tokens: 16

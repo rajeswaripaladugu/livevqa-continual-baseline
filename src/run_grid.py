@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Complete schema for results/results.csv
 CSV_COLUMNS = [
+    "run_id",
     "timestamp",
     "git_commit",
     "config_name",
@@ -44,6 +45,8 @@ CSV_COLUMNS = [
     "use_dora",
     "data_format",
     "num_train_samples",
+    "num_seen_eval_samples",
+    "num_unseen_eval_samples",
     "num_eval_samples",
     "wall_clock_seconds",
     "final_train_loss",

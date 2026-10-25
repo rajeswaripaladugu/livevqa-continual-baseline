@@ -1,16 +1,18 @@
-.PHONY: help setup test smoke run-t4 run-full analyze clean
+.PHONY: help setup test smoke laptop laptop-quick run-t4 run-full analyze clean
 
 PYTHON ?= python
 
 help:
 	@echo "Available targets:"
-	@echo "  setup      Install dependencies from requirements.txt"
-	@echo "  test       Run test suite with pytest"
-	@echo "  smoke      Run fast CPU smoke test pipeline"
-	@echo "  run-t4     Run Colab T4 4-bit QLoRA configuration"
-	@echo "  run-full   Run Full GPU bf16 LoRA configuration"
-	@echo "  analyze    Aggregate results and inject summaries into README.md"
-	@echo "  clean      Clean temporary and cached files"
+	@echo "  setup         Install dependencies from requirements.txt"
+	@echo "  test          Run test suite with pytest"
+	@echo "  smoke         Run fast CPU smoke test pipeline"
+	@echo "  laptop        Run full LiveVQA continual baseline replication on laptop CPU"
+	@echo "  laptop-quick  Run quick LiveVQA format & continual replication on laptop CPU"
+	@echo "  run-t4        Run Colab T4 4-bit QLoRA configuration"
+	@echo "  run-full      Run Full GPU bf16 LoRA configuration"
+	@echo "  analyze       Aggregate results and inject summaries into README.md"
+	@echo "  clean         Clean temporary and cached files"
 
 setup:
 	$(PYTHON) -m pip install -r requirements.txt
@@ -23,6 +25,14 @@ smoke:
 	$(PYTHON) -m src.train --config configs/cpu_smoke.yaml
 	$(PYTHON) -m src.eval --config configs/cpu_smoke.yaml
 	$(PYTHON) -m src.analyze
+
+laptop:
+	$(PYTHON) -m src.create_laptop_dataset
+	$(PYTHON) -m src.laptop_runner
+
+laptop-quick:
+	$(PYTHON) -m src.create_laptop_dataset
+	$(PYTHON) -m src.laptop_runner --quick
 
 run-t4:
 	$(PYTHON) -m src.train --config configs/colab_t4.yaml
